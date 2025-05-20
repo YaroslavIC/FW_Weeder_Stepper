@@ -1,4 +1,6 @@
 #include <GyverStepper.h>
+  // сделать autopower после HOME
+  // добавить planner в будущем 
 
 GStepper<STEPPER2WIRE> stepper0(200 * 8, A1, A0, A2);
 GStepper<STEPPER2WIRE> stepper1(200 * 8, A4, A3, A5); //A4
@@ -17,7 +19,7 @@ GStepper<STEPPER2WIRE> stepper1(200 * 8, A4, A3, A5); //A4
 #define   CMD_ML_WAIT   (1<<10)
 #define   CMD_OPTO_STP  (1<<11)
 
-//#define   DEBUG 1
+#define   DEBUG 1
 
 
 
@@ -30,15 +32,21 @@ volatile long watchdogstop_ms = 0;
 long lastmove = 0;
 
 
-void AutoPower(bool aP) {
-  stepper0.autoPower(aP);
-  stepper1.autoPower(aP);
+void AutoEn(bool aP) {
+      if (aP)  {  
+  stepper0.enable();
+  stepper1.enable();
+      } else {
+  stepper0.disable();
+  stepper1.disable();
+        
+      }
 
     #ifdef DEBUG
       if (aP)  {
-        Serial.println("AutoPower true"); }
+        Serial.println("AutoEn true"); }
       else   
-        { Serial.println("AutoPower false");};
+        { Serial.println("AutoEn false");};
      #endif   
       
         
@@ -86,7 +94,8 @@ void setup() {
   stepper0.brake();
   stepper1.brake();
 
-   AutoPower(true);
+         AutoEn(false);
+
 
 }
 
@@ -164,7 +173,8 @@ void loop() {
         Serial.println(cmdline);
       #endif        
 
-      AutoPower(false);
+            AutoEn(true);
+
       
       stepper0.setRunMode(FOLLOW_POS);
       stepper0.setTarget( 50, RELATIVE );
@@ -190,7 +200,8 @@ void loop() {
         Serial.println(cmdline);
       #endif
 
-      AutoPower(false);
+            AutoEn(true);
+
 
       stepper1.setRunMode(FOLLOW_POS);
       stepper1.setTarget( 50, RELATIVE );
@@ -202,7 +213,7 @@ void loop() {
         
       stepper1.setRunMode(KEEP_SPEED);
 
-      AutoPower(false);
+      
       stepper1.setSpeed( -1000 );
       cmd_num = cmd_num | CMD_HV_WAIT;  // установили бит ожидания
 
@@ -224,7 +235,8 @@ void loop() {
 
       stepper0.reset();
       stepper1.reset();
-      AutoPower(true);
+            AutoEn(true);
+
       cmd_num = 0;
       LaserPower(0, 0);
 
@@ -268,7 +280,7 @@ void loop() {
       val = cmdline.substring(Pchar);
       long _LaserPWM = val.toInt();
 
-      AutoPower(false);
+      AutoEn(true);
 
 
       stepper0.setRunMode(FOLLOW_POS);
@@ -325,7 +337,7 @@ void loop() {
       val = cmdline.substring(2, Dchar);
       LaserPWM = val.toInt();
 
-      AutoPower(false);
+      AutoEn(true);
 
       #ifdef DEBUG
         Serial.print("cmd - ");
@@ -415,8 +427,9 @@ void loop() {
     cmd_num = 0;
   }
 
-  if   (((((old_cmd_num & CMD_GA_WAIT) > 0) || ((old_cmd_num & CMD_GV_WAIT) > 0)  || ((old_cmd_num & CMD_ML_WAIT) > 0))) &&
-        (((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_GV_WAIT) == 0)  && ((cmd_num & CMD_ML_WAIT) == 0))) {
+
+  if   (((((old_cmd_num & CMD_GA_WAIT) > 0) || ((old_cmd_num & CMD_GV_WAIT) > 0)  || ((old_cmd_num & CMD_ML_WAIT) > 0) || ((old_cmd_num & CMD_HA_WAIT) > 0) || ((old_cmd_num & CMD_HV_WAIT) > 0)) &&
+        (((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_GV_WAIT) == 0)  && ((cmd_num & CMD_ML_WAIT) == 0) && ((cmd_num & CMD_HA_WAIT) == 0) && ((cmd_num & CMD_HV_WAIT) == 0)))) {
     #ifdef DEBUG
       Serial.print(" stop condition  ");
     #endif  
@@ -429,7 +442,7 @@ void loop() {
   if ((lastmove>0) && ((millis()-lastmove)>10000)) {
 
     lastmove = 0;
-    AutoPower(true);
+    AutoEn(false);
     #ifdef DEBUG
       Serial.print(" autopower checkout ");
     #endif    
