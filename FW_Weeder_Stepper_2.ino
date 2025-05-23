@@ -21,7 +21,7 @@
 #define   HOMEGAPDELAY       1000
 
 #define   LASERWATCHDOG_MS   15000
-#define   MOTOR_DIS_TIMEOUT  10000
+#define   MOTOR_DIS_TIMEOUT  1000000
 
 
 GStepper<STEPPER2WIRE> stepper0(200 * 8, MOTOR0_STEP_PIN, MOTOR0_DIR_PIN, MOTOR0_EN_PIN);
@@ -42,7 +42,7 @@ GStepper<STEPPER2WIRE> stepper1(200 * 8, MOTOR1_STEP_PIN, MOTOR1_DIR_PIN, MOTOR1
 #define   CMD_ML_WAIT   (1<<10)
 #define   CMD_OPTO_STP  (1<<11)
 
-#define   DEBUG 1
+//#define   DEBUG 1
 
 
 
@@ -52,7 +52,9 @@ volatile int        LaserDelay = 0;
 volatile int          LaserPWM = 0;
 volatile long watchdogstart_ms = 0;
 volatile long  watchdogstop_ms = 0;
-long lastmove = 0;
+long                  lastmove = 0;
+uint16_t        LaserStopAt_ms = 0;
+long           oldprinttime_ms = 0;
 
 
 void AutoEn(bool aP) {
@@ -91,7 +93,7 @@ void setup() {
 
   digitalWrite(LASER_ONOFF_PIN, LOW);
   pinMode(LASER_ONOFF_PIN, OUTPUT);
-  digitalWrite(LASER_ONOFF_PIN, LOW);
+  digitalWrite(LASER_ONOFF_PIN, HIGH);
 
   pinMode(OPTO1_ENDSTOP_PIN, INPUT_PULLUP);
   pinMode(OPTO0_ENDSTOP_PIN, INPUT_PULLUP);
@@ -115,6 +117,11 @@ void setup() {
   stepper1.brake();
 
   AutoEn(false);
+
+  delay(2000);
+  digitalWrite(LASER_ONOFF_PIN, LOW);
+  
+ 
 }
 
 
@@ -137,13 +144,18 @@ void LaserPower(int PWM, int _watchdogdelay_ms)
 {
   LaserPWM = PWM;
   if (PWM > 0) {
-
+#ifdef DEBUG    
+    Serial.println("Laser on");
+#endif    
     digitalWrite(LASER_ONOFF_PIN, HIGH);
     cmd_num = cmd_num | CMD_ML_WAIT;
     watchdogstart_ms = millis();
     watchdogstop_ms  = watchdogstart_ms + _watchdogdelay_ms;
     analogWrite(LASER_PWM_PIN, PWM);
   } else {
+#ifdef DEBUG    
+    Serial.println("Laser off");
+#endif    
     digitalWrite(LASER_ONOFF_PIN, LOW);
     cmd_num = cmd_num & (~CMD_ML_WAIT);
     analogWrite(LASER_PWM_PIN, 0);
@@ -193,16 +205,16 @@ void loop() {
       Serial.println(cmdline);
 #endif
 
-      AutoEn(true);
+   //   AutoEn(true);
 
 
       stepper0.setRunMode(FOLLOW_POS);
       stepper0.setTarget( HOMEGAP, RELATIVE );
-      long stmsec = millis();
-      while ((millis() - stmsec) < HOMEGAPDELAY) {
-        stepper0.tick();
-      }
 
+      while (stepper0.tick()) {
+        stepper0.tick();
+      }      
+ 
       stepper0.setRunMode(KEEP_SPEED);
 
       stepper0.setSpeed( HOMESPEED );
@@ -220,14 +232,13 @@ void loop() {
       Serial.println(cmdline);
 #endif
 
-      AutoEn(true);
+     // AutoEn(true);
 
 
       stepper1.setRunMode(FOLLOW_POS);
       stepper1.setTarget( HOMEGAP, RELATIVE );
       
-      long stmsec = millis();
-      while ((millis() - stmsec) < HOMEGAPDELAY) {
+      while (stepper1.tick()) {
         stepper1.tick();
       }
 
@@ -240,6 +251,8 @@ void loop() {
 
       cmdline = "";
     };
+
+    
     stepper0.tick();
     stepper1.tick();
 
@@ -342,14 +355,15 @@ void loop() {
 
       String val;
 
-      LaserDelay = 0;
-      LaserPWM   = 0;
+
+      uint16_t _LaserPWM   = 0;
+      LaserStopAt_ms = 0;
       int Dchar = 0;
 
       for (int i = 3; i < cmdline.length(); i++) {
         if (cmdline[i] == 'D') {
           val = cmdline.substring(i + 1);
-          LaserDelay = val.toInt();
+          LaserStopAt_ms = val.toInt()+millis();
           Dchar = i;
           break;
         }
@@ -358,7 +372,10 @@ void loop() {
       val = cmdline.substring(2, Dchar);
       LaserPWM = val.toInt();
 
-      AutoEn(true);
+
+      LaserPower(LaserPWM, LASERWATCHDOG_MS);
+
+ 
 
 #ifdef DEBUG
       Serial.print("cmd - ");
@@ -368,7 +385,7 @@ void loop() {
       Serial.print(" ");
       Serial.print(LaserPWM);
       Serial.print(" ");
-      Serial.println(LaserDelay);
+      Serial.println(LaserStopAt_ms);
 #endif
 
 
@@ -408,6 +425,7 @@ void loop() {
 #endif
       cmd_num = cmd_num & (~(CMD_GA_WAIT));  // сбрасываем бит  если остановились
     }
+
   }
 
   if (stepper1.tick() == 0) {
@@ -417,12 +435,31 @@ void loop() {
 #endif
       cmd_num = cmd_num & (~(CMD_GV_WAIT));   // сбрасываем бит  если остановились
     }
+
   }
 
+
+
+    if ((LaserPWM > 0) &&  ((cmd_num & CMD_GV_WAIT) == 0) && ((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_ML_WAIT) == 0)) {
+      LaserPower(0, 0);
+#ifdef DEBUG
+      Serial.print("Laser stop by motor A and V ");
+      PrintStatus();
+#endif
+    };
+
+
+  if ((oldprinttime_ms==0) || (millis()-oldprinttime_ms>1000)) {
+    if ((stepper1.tick() != 0) || (stepper0.tick() != 0)) {
+      StandardPrintStatus( );
+      oldprinttime_ms=millis();
+    };
+  };
+  
   stepper0.tick();
   stepper1.tick();
 
-
+//
   if ((LaserPWM > 0) &&  ((cmd_num & CMD_GV_WAIT) == 0) && ((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_ML_WAIT) != 0)) {
     LaserPower(0, 0);
 #ifdef DEBUG
@@ -432,10 +469,21 @@ void loop() {
   };
 
 
+  if ((LaserStopAt_ms != 0) && (LaserStopAt_ms< millis()) && ((cmd_num & CMD_ML_WAIT) != 0))  {
+    LaserPower(0, 0);
+    LaserStopAt_ms = 0;
+#ifdef DEBUG
+    cmd_num = cmd_num & (~(CMD_ML_WAIT)); 
+    Serial.print("Laser off normally");
+    PrintStatus();
+#endif
+  }  
+
+
   if ((watchdogstart_ms != 0) && (watchdogstop_ms < millis()))  {
     LaserPower(0, 0);
 #ifdef DEBUG
-    Serial.print("Laser stop by watchdog  ");
+    Serial.print("Laser off by watchdog  ");
     PrintStatus();
 #endif
   }
@@ -468,6 +516,8 @@ void loop() {
     Serial.print(" autopower checkout ");
 #endif
   }
+
+  
 
 
 
