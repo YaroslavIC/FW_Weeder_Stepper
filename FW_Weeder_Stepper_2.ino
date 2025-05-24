@@ -17,7 +17,7 @@
 #define   OPTO0_ENDSTOP_PIN  3
 #define   OPTO1_ENDSTOP_PIN  2
 
-#define   HOME_A_SPEED       -5000
+#define   HOME_A_SPEED       -1000
 #define   HOME_V_SPEED       -100
 #define   HOME_A_GAP         200
 #define   HOME_V_GAP         30
@@ -40,14 +40,14 @@ GStepper<STEPPER2WIRE> stepper1(200 * 8, MOTOR1_STEP_PIN, MOTOR1_DIR_PIN, MOTOR1
 #define   CMD_HV_WAIT   (1<<4)
 
 #define   CMD_GA_WAIT   (1<<6)
-
+#define   CMD_PILOT     (1<<7)
 #define   CMD_GV_WAIT   (1<<8)
 
 #define   CMD_ML_WAIT   (1<<10)
 #define   CMD_OPTO_STP  (1<<11)
-#define   CMD_LASER_ON  (1<<12)
+//#define   CMD_LASER_ON  (1<<12)
 
-//#define   DEBUG 1
+#define   DEBUG 1
 
 
 
@@ -60,9 +60,10 @@ long           watchdogstop_ms = 0;
 long                  lastmove = 0;
 long            LaserStopAt_ms = 0;
 long           oldprinttime_ms = 0;
-long               cooltime_ms = 0;
+//long               cooltime_ms = 0;
 volatile int      prevLaserPWM = 0;
 long            CoolTimeOff_ms = 0;
+volatile int        LaserPilot = 0;
 
 void reboot() {
   wdt_disable();
@@ -146,6 +147,7 @@ void opto0() {
   if ((cmd_num & (CMD_HA_WAIT)) > 0) {
     stepper0.reset();
     cmd_num = CMD_IDLE;
+    Serial.println("OK");
   };
 }
 
@@ -153,6 +155,7 @@ void opto1() {
   if ((cmd_num & (CMD_HV_WAIT)) > 0) {
     stepper1.reset();
     cmd_num = CMD_IDLE;
+    Serial.println("OK");
   };
 }
 
@@ -164,7 +167,7 @@ void LaserPower(int PWM, int _watchdogdelay_ms)
     Serial.println("Laser on");
 #endif    
     digitalWrite(LASER_ONOFF_PIN, HIGH);
-    cmd_num = cmd_num | CMD_LASER_ON;
+
     watchdogstart_ms = millis();
     watchdogstop_ms  = watchdogstart_ms + _watchdogdelay_ms;
     analogWrite(LASER_PWM_PIN, PWM);
@@ -172,18 +175,30 @@ void LaserPower(int PWM, int _watchdogdelay_ms)
 
    
   } else {
+
+
+    if (LaserPilot>0) {
+#ifdef DEBUG    
+    Serial.println("Laser pilot");
+#endif    
+      analogWrite(LASER_PWM_PIN, LaserPilot);
+      cmd_num = cmd_num | CMD_PILOT;// установили бит ожидания
+      
+    } else   {
+    
 #ifdef DEBUG    
     Serial.println("Laser off");
 #endif    
- //   digitalWrite(LASER_ONOFF_PIN, LOW);
-    cmd_num = cmd_num & (~CMD_LASER_ON);
+    cmd_num = cmd_num & (~CMD_PILOT);
     
     analogWrite(LASER_PWM_PIN, 0);
     watchdogstart_ms = 0;
     watchdogstop_ms  = 0;
+    CoolTimeOff_ms = millis()+LASER_COOL_TIMER_MS;
 
-    cooltime_ms = millis();
+
   }
+}
 
 }
 
@@ -382,6 +397,33 @@ void loop() {
     stepper0.tick();
     stepper1.tick();
 
+    // Pxxx  -  включиь лазер пилот тоном - пилот тон не отключается другими командами
+    ////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////
+
+    if ((cmdline.length() > 1) && (cmdline.substring(0, 1) == "P")) {
+
+      String val;
+      val = cmdline.substring(1);
+      LaserPilot = val.toInt();      
+      LaserPower(LaserPilot, LASERWATCHDOG_MS);
+
+
+#ifdef DEBUG
+      Serial.print("CMD: ");
+      Serial.print(cmdline);
+      Serial.print(" Value: ");
+      Serial.print(cmdline.substring(1));
+      Serial.print(" ");
+      Serial.println(LaserPilot);
+#endif
+
+      
+
+      cmdline = "";
+
+    };  
+
 
     // MLxxxDyyy  -  включиь лазер с мощностью xxx на время yyy
     ////////////////////////////////////////////////////////////////////
@@ -460,7 +502,7 @@ void loop() {
     }
 
     // отключаем лазер если биты отвечающие за моторы обнулены, лезер включен, бит за работу неподвижного лазера не установлен
-    if ((LaserPWM > 0) &&  ((cmd_num & CMD_GV_WAIT) == 0) && ((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_ML_WAIT) == 0)) {
+    if ((LaserPWM > 0) &&  ((cmd_num & CMD_GV_WAIT) == 0) && ((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_ML_WAIT) == 0)  ) {
       LaserPower(0, 0);
 #ifdef DEBUG
       Serial.println("Laser stop by stop motors A and V ");
@@ -476,6 +518,7 @@ void loop() {
     LaserPower(0, 0);
     LaserStopAt_ms = 0;
     cmd_num = cmd_num & (~(CMD_ML_WAIT)); 
+    Serial.println("OK");
 #ifdef DEBUG
     Serial.println("Laser off normally");
     PrintStatus();
@@ -514,13 +557,13 @@ void loop() {
   };
 
 
-  if ((CoolTimeOff_ms == 0) && (LaserPWM>0) && (prevLaserPWM>0)) {
-    CoolTimeOff_ms = millis()+LASER_COOL_TIMER_MS;
-    digitalWrite(LASER_ONOFF_PIN, HIGH);    
-#ifdef DEBUG
-    Serial.println(" Cool timer start");
-#endif    
-  }
+//  if ((CoolTimeOff_ms == 0) && (LaserPWM>0) && (prevLaserPWM>0)) {
+//    CoolTimeOff_ms = millis()+LASER_COOL_TIMER_MS;
+//    digitalWrite(LASER_ONOFF_PIN, HIGH);    
+//#ifdef DEBUG
+//    Serial.println(" Cool timer start");
+//#endif    
+//  }
 
   if ((CoolTimeOff_ms > 0)  && (millis()>CoolTimeOff_ms)) {
     CoolTimeOff_ms = 0;
