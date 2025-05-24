@@ -49,7 +49,7 @@ GStepper<STEPPER2WIRE> stepper1(200 * 8, MOTOR1_STEP_PIN, MOTOR1_DIR_PIN, MOTOR1
 
 #define   CMD_ML_WAIT   (1<<10)
 #define   CMD_OPTO_STP  (1<<11)
-//#define   CMD_LASER_ON  (1<<12)
+
 
 //#define   DEBUG 1
 
@@ -221,18 +221,13 @@ void PrintStatus(void) {
   Serial.print(LaserPWM);
   Serial.print(",");
   Serial.print(CoolTimeOff_ms);
+  Serial.print(",");
+  Serial.print(((float)stepper0.getCurrent()-11825)/24000*360 );
+  Serial.print(",");
+  Serial.print(((float)stepper1.getCurrent())/280*62.68-62.68/2);
   Serial.println(";");
 
   
-}
-
-void StandardPrintStatus(void) {
-  Serial.print(stepper0.getCurrent());
-  Serial.print(",");
-  Serial.print(stepper1.getCurrent());
-  Serial.print(",");
-  Serial.print(LaserPWM);
-  Serial.println(";");
 }
 
 void loop() {
@@ -241,6 +236,7 @@ void loop() {
   if (Serial.available() != 0) {
     String cmdline = Serial.readStringUntil('\n');
     cmdline.trim();
+    
 #ifdef DEBUG
     Serial.println(cmdline);
 #endif
@@ -326,7 +322,7 @@ void loop() {
       LaserPower(0, 0);
 
 #ifdef DEBUG
-      StandardPrintStatus();
+      PrintStatus();
 #endif
       reboot();
       cmdline = "";
