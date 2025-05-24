@@ -2,6 +2,10 @@
 #include <avr/wdt.h>
 // сделать autopower после HOME
 // добавить planner в будущем
+//   A: 24000 = 360 deg
+//   V: 280   = 62.68 deg
+
+
 
 #define   LASER_ONOFF_PIN    7
 #define   LASER_PWM_PIN      5
@@ -47,7 +51,7 @@ GStepper<STEPPER2WIRE> stepper1(200 * 8, MOTOR1_STEP_PIN, MOTOR1_DIR_PIN, MOTOR1
 #define   CMD_OPTO_STP  (1<<11)
 //#define   CMD_LASER_ON  (1<<12)
 
-#define   DEBUG 1
+//#define   DEBUG 1
 
 
 
@@ -64,6 +68,7 @@ long           oldprinttime_ms = 0;
 volatile int      prevLaserPWM = 0;
 long            CoolTimeOff_ms = 0;
 volatile int        LaserPilot = 0;
+int                  GAGV_wait = 0;
 
 void reboot() {
   wdt_disable();
@@ -103,11 +108,12 @@ void setup() {
   Serial.println("DEBUG Enabled");
 #endif
 
-  digitalWrite(LASER_PWM_PIN, LOW);
+  digitalWrite(LASER_ONOFF_PIN, LOW);
+  analogWrite(LASER_PWM_PIN, 0);
+  
   pinMode(LASER_PWM_PIN, OUTPUT);
   digitalWrite(LASER_PWM_PIN, LOW);
 
-  digitalWrite(LASER_ONOFF_PIN, LOW);
   pinMode(LASER_ONOFF_PIN, OUTPUT);
   digitalWrite(LASER_ONOFF_PIN, HIGH);
 
@@ -319,7 +325,9 @@ void loop() {
       cmd_num = 0;
       LaserPower(0, 0);
 
+#ifdef DEBUG
       StandardPrintStatus();
+#endif
       reboot();
       cmdline = "";
     };
@@ -387,7 +395,7 @@ void loop() {
 #endif
 
 
-
+      GAGV_wait=1; 
       cmd_num = cmd_num | CMD_GA_WAIT;// установили бит ожидания
       cmd_num = cmd_num | CMD_GV_WAIT;// установили бит ожидания
 
@@ -481,6 +489,10 @@ void loop() {
     }
   };
 
+ 
+  
+
+
 
   stepper0.tick();
   stepper1.tick();
@@ -501,9 +513,18 @@ void loop() {
 #endif
     }
 
+
+    
+  if ((stepper0.tick()== 0) && (stepper0.tick() == 0) && (GAGV_wait==1)) {
+    GAGV_wait  =0;
+    Serial.println("OK");
+  }
+
+  
     // отключаем лазер если биты отвечающие за моторы обнулены, лезер включен, бит за работу неподвижного лазера не установлен
     if ((LaserPWM > 0) &&  ((cmd_num & CMD_GV_WAIT) == 0) && ((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_ML_WAIT) == 0)  ) {
       LaserPower(0, 0);
+      Serial.println("OK");
 #ifdef DEBUG
       Serial.println("Laser stop by stop motors A and V ");
       PrintStatus();
@@ -548,14 +569,13 @@ void loop() {
   }
 
   
+#ifdef DEBUG  
   // ежесекундное вывод координат мотора
   if ((oldprinttime_ms==0) || (millis()-oldprinttime_ms>1000)) {
- //   if ((stepper1.tick() != 0) || (stepper0.tick() != 0)) {
       PrintStatus();
       oldprinttime_ms=millis();
-  //  };
   };
-
+#endif 
 
 //  if ((CoolTimeOff_ms == 0) && (LaserPWM>0) && (prevLaserPWM>0)) {
 //    CoolTimeOff_ms = millis()+LASER_COOL_TIMER_MS;
