@@ -1,4 +1,5 @@
 #include <GyverStepper.h>
+#include <avr/wdt.h>
 // сделать autopower после HOME
 // добавить planner в будущем
 
@@ -16,12 +17,15 @@
 #define   OPTO0_ENDSTOP_PIN  3
 #define   OPTO1_ENDSTOP_PIN  2
 
-#define   HOMESPEED          -1000
-#define   HOMEGAP            50
-#define   HOMEGAPDELAY       1000
+#define   HOME_A_SPEED       -5000
+#define   HOME_V_SPEED       -100
+#define   HOME_A_GAP         200
+#define   HOME_V_GAP         30
+ 
 
-#define   LASERWATCHDOG_MS   15000
-#define   MOTOR_DIS_TIMEOUT  1000000
+#define   LASERWATCHDOG_MS      15000
+#define   MOTOR_DIS_TIMEOUT_MS  1000000
+#define   LASER_COOL_TIMER_MS   15000
 
 
 GStepper<STEPPER2WIRE> stepper0(200 * 8, MOTOR0_STEP_PIN, MOTOR0_DIR_PIN, MOTOR0_EN_PIN);
@@ -34,13 +38,14 @@ GStepper<STEPPER2WIRE> stepper1(200 * 8, MOTOR1_STEP_PIN, MOTOR1_DIR_PIN, MOTOR1
 #define   CMD_HV        (1<<2)
 #define   CMD_HA_WAIT   (1<<3)
 #define   CMD_HV_WAIT   (1<<4)
-#define   CMD_GA        (1<<5)
+
 #define   CMD_GA_WAIT   (1<<6)
-#define   CMD_GV        (1<<7)
+
 #define   CMD_GV_WAIT   (1<<8)
-#define   CMD_ML        (1<<9)
+
 #define   CMD_ML_WAIT   (1<<10)
 #define   CMD_OPTO_STP  (1<<11)
+#define   CMD_LASER_ON  (1<<12)
 
 //#define   DEBUG 1
 
@@ -48,13 +53,23 @@ GStepper<STEPPER2WIRE> stepper1(200 * 8, MOTOR1_STEP_PIN, MOTOR1_DIR_PIN, MOTOR1
 
 volatile uint16_t      cmd_num = 0;
 volatile uint16_t  old_cmd_num = 0;
-volatile int        LaserDelay = 0;
+long                LaserDelay = 0;
 volatile int          LaserPWM = 0;
-volatile long watchdogstart_ms = 0;
-volatile long  watchdogstop_ms = 0;
+long          watchdogstart_ms = 0;
+long           watchdogstop_ms = 0;
 long                  lastmove = 0;
-uint16_t        LaserStopAt_ms = 0;
+long            LaserStopAt_ms = 0;
 long           oldprinttime_ms = 0;
+long               cooltime_ms = 0;
+volatile int      prevLaserPWM = 0;
+long            CoolTimeOff_ms = 0;
+
+void reboot() {
+  wdt_disable();
+  wdt_enable(WDTO_15MS);
+  while (1) {}
+}
+
 
 
 void AutoEn(bool aP) {
@@ -110,8 +125,9 @@ void setup() {
   stepper0.setMaxSpeed(16000);
   stepper0.setAcceleration(1500);
 
-  stepper1.setMaxSpeed(16000);
-  stepper1.setAcceleration(1000);
+  stepper1.setMaxSpeed(1000);
+  stepper1.setAcceleration(100);
+
 
   stepper0.brake();
   stepper1.brake();
@@ -129,14 +145,14 @@ void setup() {
 void opto0() {
   if ((cmd_num & (CMD_HA_WAIT)) > 0) {
     stepper0.reset();
-    cmd_num = 0;
+    cmd_num = CMD_IDLE;
   };
 }
 
 void opto1() {
   if ((cmd_num & (CMD_HV_WAIT)) > 0) {
     stepper1.reset();
-    cmd_num = 0;
+    cmd_num = CMD_IDLE;
   };
 }
 
@@ -148,25 +164,33 @@ void LaserPower(int PWM, int _watchdogdelay_ms)
     Serial.println("Laser on");
 #endif    
     digitalWrite(LASER_ONOFF_PIN, HIGH);
-    cmd_num = cmd_num | CMD_ML_WAIT;
+    cmd_num = cmd_num | CMD_LASER_ON;
     watchdogstart_ms = millis();
     watchdogstop_ms  = watchdogstart_ms + _watchdogdelay_ms;
     analogWrite(LASER_PWM_PIN, PWM);
+    CoolTimeOff_ms = 0;
+
+   
   } else {
 #ifdef DEBUG    
     Serial.println("Laser off");
 #endif    
-    digitalWrite(LASER_ONOFF_PIN, LOW);
-    cmd_num = cmd_num & (~CMD_ML_WAIT);
+ //   digitalWrite(LASER_ONOFF_PIN, LOW);
+    cmd_num = cmd_num & (~CMD_LASER_ON);
+    
     analogWrite(LASER_PWM_PIN, 0);
     watchdogstart_ms = 0;
     watchdogstop_ms  = 0;
+
+    cooltime_ms = millis();
   }
 
 }
 
 
 void PrintStatus(void) {
+  Serial.print(millis());
+  Serial.print(" ");
   Serial.print(cmd_num, BIN);
   Serial.print(" A:");
   Serial.print(stepper0.getCurrent());
@@ -174,7 +198,11 @@ void PrintStatus(void) {
   Serial.print(stepper1.getCurrent());
   Serial.print(",");
   Serial.print(LaserPWM);
+  Serial.print(",");
+  Serial.print(CoolTimeOff_ms);
   Serial.println(";");
+
+  
 }
 
 void StandardPrintStatus(void) {
@@ -198,6 +226,8 @@ void loop() {
 
 
     // $HA поиск нуля по оси V
+    ////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////
     if (cmdline == "$HA") {
 
 #ifdef DEBUG
@@ -205,11 +235,8 @@ void loop() {
       Serial.println(cmdline);
 #endif
 
-   //   AutoEn(true);
-
-
       stepper0.setRunMode(FOLLOW_POS);
-      stepper0.setTarget( HOMEGAP, RELATIVE );
+      stepper0.setTarget( HOME_A_GAP, RELATIVE );
 
       while (stepper0.tick()) {
         stepper0.tick();
@@ -217,7 +244,7 @@ void loop() {
  
       stepper0.setRunMode(KEEP_SPEED);
 
-      stepper0.setSpeed( HOMESPEED );
+      stepper0.setSpeed( HOME_A_SPEED );
       cmd_num = cmd_num | CMD_HA_WAIT;// установили бит ожидания
 
       cmdline = "";
@@ -225,6 +252,8 @@ void loop() {
 
 
     // $HV поиск нуля по оси V
+    ////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////
     if (cmdline == "$HV") {
 
 #ifdef DEBUG
@@ -236,7 +265,7 @@ void loop() {
 
 
       stepper1.setRunMode(FOLLOW_POS);
-      stepper1.setTarget( HOMEGAP, RELATIVE );
+      stepper1.setTarget( HOME_V_GAP, RELATIVE );
       
       while (stepper1.tick()) {
         stepper1.tick();
@@ -245,8 +274,7 @@ void loop() {
 
       stepper1.setRunMode(KEEP_SPEED);
 
-
-      stepper1.setSpeed( HOMESPEED );
+      stepper1.setSpeed( HOME_V_SPEED );
       cmd_num = cmd_num | CMD_HV_WAIT;  // установили бит ожидания
 
       cmdline = "";
@@ -258,13 +286,15 @@ void loop() {
 
 
 
-    // $R сброс всего
-    if (cmdline == "$R") {
+     // $R сброс всего
+     ////////////////////////////////////////////////////////////////////
+     ////////////////////////////////////////////////////////////////////
+   if (cmdline == "$R") {
 
 #ifdef DEBUG
-      Serial.print("cmd - ");
+      Serial.print("CMD: ");
       Serial.println(cmdline);
-      Serial.println("Full reset");
+      Serial.println("  Full reset");
 #endif
 
       stepper0.reset();
@@ -275,7 +305,7 @@ void loop() {
       LaserPower(0, 0);
 
       StandardPrintStatus();
-
+      reboot();
       cmdline = "";
     };
 
@@ -285,6 +315,9 @@ void loop() {
 
     // G с лазером
     // GАxxxVyyyPzzz  -  двигаться по оси А на ххх по оси V на yyy и включиь лазер с мощностью zzz
+    ////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////
+    
     if ((cmdline.length() > 2) && (cmdline.substring(0, 2) == "GA")) {
 
       String val;
@@ -351,6 +384,8 @@ void loop() {
 
 
     // MLxxxDyyy  -  включиь лазер с мощностью xxx на время yyy
+    ////////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////
     if ((cmdline.length() > 2) && (cmdline.substring(0, 2) == "ML")) {
 
       String val;
@@ -372,13 +407,10 @@ void loop() {
       val = cmdline.substring(2, Dchar);
       LaserPWM = val.toInt();
 
-
       LaserPower(LaserPWM, LASERWATCHDOG_MS);
 
- 
-
 #ifdef DEBUG
-      Serial.print("cmd - ");
+      Serial.print("CMD: ");
       Serial.print(cmdline);
       Serial.print(" Value: ");
       Serial.print(cmdline.substring(2));
@@ -389,7 +421,6 @@ void loop() {
 #endif
 
 
-      cmd_num = cmd_num & (~CMD_ML); // сбросили бит команды
       cmd_num = cmd_num | CMD_ML_WAIT;// установили бит ожидания
 
       cmdline = "";
@@ -400,7 +431,7 @@ void loop() {
 
     if (cmdline != "") {
 #ifdef DEBUG
-      Serial.print("unknow - ");
+      Serial.print("Unknow CMD: ");
       Serial.println(cmdline);
 #endif
       cmd_num = CMD_IDLE; // сбросываем все команды
@@ -412,113 +443,94 @@ void loop() {
   stepper0.tick();
   stepper1.tick();
 
-  if ((stepper0.tick() != 0) | (stepper1.tick() != 0)) {
-#ifdef DEBUG
-    PrintStatus();
-#endif
-  };
-
-  if (stepper0.tick() == 0) {
-    if ((cmd_num & CMD_GA_WAIT) != 0) {
+  // сбрасываем соответствующий бит при остановке мотора 0  ось А
+  if ((stepper0.tick() == 0) && ((cmd_num & CMD_GA_WAIT) != 0)) {
+      cmd_num = cmd_num & (~(CMD_GA_WAIT));  // сбрасываем бит  если остановились
 #ifdef DEBUG
       Serial.println("Stop A   ");
 #endif
-      cmd_num = cmd_num & (~(CMD_GA_WAIT));  // сбрасываем бит  если остановились
     }
-
-  }
-
-  if (stepper1.tick() == 0) {
-    if ((cmd_num & CMD_GV_WAIT) != 0) {
+  
+  // сбрасываем соответствующий бит при остановке мотора 1  ось V
+  if ((stepper1.tick() == 0) && ((cmd_num & CMD_GV_WAIT) != 0)) {
+      cmd_num = cmd_num & (~(CMD_GV_WAIT));   // сбрасываем бит  если остановились
 #ifdef DEBUG
       Serial.println("Stop V   ");
 #endif
-      cmd_num = cmd_num & (~(CMD_GV_WAIT));   // сбрасываем бит  если остановились
     }
 
-  }
-
-
-
+    // отключаем лазер если биты отвечающие за моторы обнулены, лезер включен, бит за работу неподвижного лазера не установлен
     if ((LaserPWM > 0) &&  ((cmd_num & CMD_GV_WAIT) == 0) && ((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_ML_WAIT) == 0)) {
       LaserPower(0, 0);
 #ifdef DEBUG
-      Serial.print("Laser stop by motor A and V ");
+      Serial.println("Laser stop by stop motors A and V ");
       PrintStatus();
 #endif
     };
-
-
-  if ((oldprinttime_ms==0) || (millis()-oldprinttime_ms>1000)) {
-    if ((stepper1.tick() != 0) || (stepper0.tick() != 0)) {
-      StandardPrintStatus( );
-      oldprinttime_ms=millis();
-    };
-  };
   
   stepper0.tick();
   stepper1.tick();
 
-//
-  if ((LaserPWM > 0) &&  ((cmd_num & CMD_GV_WAIT) == 0) && ((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_ML_WAIT) != 0)) {
-    LaserPower(0, 0);
-#ifdef DEBUG
-    Serial.print("Laser stop by motor/time stop  ");
-    PrintStatus();
-#endif
-  };
-
-
+  // отключаем лазер если прошло время команды ML
   if ((LaserStopAt_ms != 0) && (LaserStopAt_ms< millis()) && ((cmd_num & CMD_ML_WAIT) != 0))  {
     LaserPower(0, 0);
     LaserStopAt_ms = 0;
-#ifdef DEBUG
     cmd_num = cmd_num & (~(CMD_ML_WAIT)); 
-    Serial.print("Laser off normally");
+#ifdef DEBUG
+    Serial.println("Laser off normally");
     PrintStatus();
 #endif
   }  
 
-
+  // watchdog лазера 
   if ((watchdogstart_ms != 0) && (watchdogstop_ms < millis()))  {
     LaserPower(0, 0);
+    watchdogstart_ms = 0;
+    cmd_num = CMD_IDLE;
 #ifdef DEBUG
-    Serial.print("Laser off by watchdog  ");
+    Serial.println("Laser off by watchdog  ");
     PrintStatus();
 #endif
   }
+ 
 
-  if   ((cmd_num & CMD_OPTO_STP) != 0)   {
-#ifdef DEBUG
-    Serial.print("Opto stop  ");
-    PrintStatus();
-#endif
-    cmd_num = 0;
-  }
-
-
-  if   (((((old_cmd_num & CMD_GA_WAIT) > 0) || ((old_cmd_num & CMD_GV_WAIT) > 0)  || ((old_cmd_num & CMD_ML_WAIT) > 0) || ((old_cmd_num & CMD_HA_WAIT) > 0) || ((old_cmd_num & CMD_HV_WAIT) > 0)) &&
-         (((cmd_num & CMD_GA_WAIT) == 0) && ((cmd_num & CMD_GV_WAIT) == 0)  && ((cmd_num & CMD_ML_WAIT) == 0) && ((cmd_num & CMD_HA_WAIT) == 0) && ((cmd_num & CMD_HV_WAIT) == 0)))) {
-#ifdef DEBUG
-    Serial.print(" stop condition  ");
-#endif
-
-    lastmove = millis();
-
-    StandardPrintStatus();
-  }
-
-  if ((lastmove > 0) && ((millis() - lastmove) > MOTOR_DIS_TIMEOUT)) {
+  // timeout для моторов - отключае после простоя
+  if ((lastmove > 0) && ((millis() - lastmove) > MOTOR_DIS_TIMEOUT_MS)) {
 
     lastmove = 0;
     AutoEn(false);
 #ifdef DEBUG
-    Serial.print(" autopower checkout ");
+    Serial.println(" autopower checkout ");
 #endif
   }
 
   
+  // ежесекундное вывод координат мотора
+  if ((oldprinttime_ms==0) || (millis()-oldprinttime_ms>1000)) {
+ //   if ((stepper1.tick() != 0) || (stepper0.tick() != 0)) {
+      PrintStatus();
+      oldprinttime_ms=millis();
+  //  };
+  };
 
+
+  if ((CoolTimeOff_ms == 0) && (LaserPWM>0) && (prevLaserPWM>0)) {
+    CoolTimeOff_ms = millis()+LASER_COOL_TIMER_MS;
+    digitalWrite(LASER_ONOFF_PIN, HIGH);    
+#ifdef DEBUG
+    Serial.println(" Cool timer start");
+#endif    
+  }
+
+  if ((CoolTimeOff_ms > 0)  && (millis()>CoolTimeOff_ms)) {
+    CoolTimeOff_ms = 0;
+    digitalWrite(LASER_ONOFF_PIN, LOW);    
+#ifdef DEBUG
+    Serial.println(" Cool timer stop ");
+#endif    
+  }
+
+  prevLaserPWM = LaserPWM;
 
 
   stepper0.tick();
